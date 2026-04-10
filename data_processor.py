@@ -12,13 +12,12 @@ os.environ['PYSPARK_DRIVER_PYTHON'] = sys.executable
 os.environ['PYSPARK_SUBMIT_ARGS'] = '--packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1 pyspark-shell'
 
 spark = SparkSession.builder \
-    .appName("Sten_IoT_Full_Processor") \
+    .appName("Sten_IoT_Final_Assignment") \
     .master("local[*]") \
     .getOrCreate()
 
 spark.sparkContext.setLogLevel("ERROR")
 
-# 2. Схема даних сенсорів
 schema = StructType([
     StructField("id", StringType(), True),
     StructField("temperature", DoubleType(), True),
@@ -46,29 +45,41 @@ parsed_df = df.selectExpr("CAST(value AS STRING)") \
 aggregated_df = parsed_df \
     .groupBy(F.window(F.col("timestamp"), "1 minute", "30 seconds")) \
     .agg(
-        F.avg("temperature").alias("avg_temp"),
-        F.avg("humidity").alias("avg_humidity")
+        F.avg("temperature").alias("t_avg"),
+        F.avg("humidity").alias("h_avg")
     )
 
 conditions_df = spark.read.csv("alerts_conditions.csv", header=True, inferSchema=True)
 alerts_df = aggregated_df.crossJoin(conditions_df)
 
 final_alerts = alerts_df.filter(
-    ((F.col("avg_temp") > F.col("temperature_max")) & (F.col("temperature_max") != -999)) |
-    ((F.col("avg_temp") < F.col("temperature_min")) & (F.col("temperature_min") != -999)) |
-    ((F.col("avg_humidity") > F.col("humidity_max")) & (F.col("humidity_max") != -999)) |
-    ((F.col("avg_humidity") < F.col("humidity_min")) & (F.col("humidity_min") != -999))
+    ((F.col("t_avg") > F.col("temperature_max")) & (F.col("temperature_max") != -999)) |
+    ((F.col("t_avg") < F.col("temperature_min")) & (F.col("temperature_min") != -999)) |
+    ((F.col("h_avg") > F.col("humidity_max")) & (F.col("humidity_max") != -999)) |
+    ((F.col("h_avg") < F.col("humidity_min")) & (F.col("humidity_min") != -999))
 )
 
-query = final_alerts.writeStream \
+result_df = final_alerts.withColumn("timestamp", F.current_timestamp().cast("string"))
+
+output_df = result_df.select(
+    F.to_json(F.struct("window", "t_avg", "h_avg", "code", "message", "timestamp")).alias("value")
+)
+
+query = output_df.writeStream \
+    .format("kafka") \
+    .option("kafka.bootstrap.servers", bootstrap_servers) \
+    .option("topic", "sten_alerts") \
+    .option("checkpointLocation", "checkpoints_final_submission") \
+    .option("kafka.security.protocol", kafka_config['security_protocol']) \
+    .option("kafka.sasl.mechanism", kafka_config['sasl_mechanism']) \
+    .option("kafka.sasl.jaas.config", f'org.apache.kafka.common.security.plain.PlainLoginModule required username="{kafka_config["username"]}" password="{kafka_config["password"]}";') \
+    .start()
+
+console_query = output_df.writeStream \
     .outputMode("append") \
     .format("console") \
     .option("truncate", "false") \
-    .option("checkpointLocation", "checkpoints_console_final") \
     .start()
 
-print("🚀 СИСТЕМУ ЗАПУЩЕНО!")
-print("Чекаємо 60 секунд на формування першого вікна...")
-print("Результати (алерти) з'являться нижче у вигляді таблиці.")
-
-query.awaitTermination()
+print("🚀 Стрімінг запущено. Результати з'являться в консолі та в Kafka топіку sten_alerts через 1 хв.")
+spark.streams.awaitAnyTermination()
