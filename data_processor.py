@@ -12,12 +12,13 @@ os.environ['PYSPARK_DRIVER_PYTHON'] = sys.executable
 os.environ['PYSPARK_SUBMIT_ARGS'] = '--packages org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1 pyspark-shell'
 
 spark = SparkSession.builder \
-    .appName("Sten_IoT_Monitoring_Final") \
+    .appName("Sten_IoT_Full_Processor") \
     .master("local[*]") \
     .getOrCreate()
 
 spark.sparkContext.setLogLevel("ERROR")
 
+# 2. Схема даних сенсорів
 schema = StructType([
     StructField("id", StringType(), True),
     StructField("temperature", DoubleType(), True),
@@ -59,16 +60,15 @@ final_alerts = alerts_df.filter(
     ((F.col("avg_humidity") < F.col("humidity_min")) & (F.col("humidity_min") != -999))
 )
 
-query = final_alerts.selectExpr("to_json(struct(*)) AS value") \
-    .writeStream \
-    .format("kafka") \
-    .option("kafka.bootstrap.servers", bootstrap_servers) \
-    .option("topic", "sten_alerts") \
-    .option("checkpointLocation", "checkpoints_final_prod") \
-    .option("kafka.security.protocol", kafka_config['security_protocol']) \
-    .option("kafka.sasl.mechanism", kafka_config['sasl_mechanism']) \
-    .option("kafka.sasl.jaas.config", f'org.apache.kafka.common.security.plain.PlainLoginModule required username="{kafka_config["username"]}" password="{kafka_config["password"]}";') \
+query = final_alerts.writeStream \
+    .outputMode("append") \
+    .format("console") \
+    .option("truncate", "false") \
+    .option("checkpointLocation", "checkpoints_console_final") \
     .start()
 
-print("Процесор запущено. Система моніторингу активна.")
+print("🚀 СИСТЕМУ ЗАПУЩЕНО!")
+print("Чекаємо 60 секунд на формування першого вікна...")
+print("Результати (алерти) з'являться нижче у вигляді таблиці.")
+
 query.awaitTermination()
